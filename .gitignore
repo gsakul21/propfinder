@@ -1,0 +1,67 @@
+# === Environment / Secrets ===
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === Node.js / Next.js ===
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# === Testing / Coverage ===
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+coverage.xml
+*.cover
+
+# === Database / Docker volumes ===
+pgdata/
+*.db
+*.sqlite
+*.sqlite3
+
+# === County data files (potentially contains PII) ===
+data/
+*.csv
+!scripts/*.csv.example
+
+# === Build artifacts ===
+*.pyc
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs ===
+*.log
+logs/

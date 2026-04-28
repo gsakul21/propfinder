@@ -1,0 +1,78 @@
+version: "3.9"
+
+# Local dev credentials are intentional defaults.
+# Override any variable via a .env file (see .env.example).
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-propfinder}
+      POSTGRES_USER: ${POSTGRES_USER:-propfinder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-propfinder}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-propfinder} -d ${POSTGRES_DB:-propfinder}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-propfinder}:${POSTGRES_PASSWORD:-propfinder}@db:5432/${POSTGRES_DB:-propfinder}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-propfinder}:${POSTGRES_PASSWORD:-propfinder}@db:5432/${POSTGRES_DB:-propfinder}
+      API_KEY: ${API_KEY:-dev-secret-key}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend:/app
+
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python /app/scripts/seed.py
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-propfinder}:${POSTGRES_PASSWORD:-propfinder}@db:5432/${POSTGRES_DB:-propfinder}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./scripts:/app/scripts
+      - ./workers:/app/workers
+    profiles:
+      - seed
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
