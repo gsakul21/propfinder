@@ -7,6 +7,7 @@ Run:
   DATABASE_URL=... python -m workers.scoring.recompute
 """
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +18,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 
 from workers.common.db import get_session
+from workers.common.log import elapsed, log
 from workers.common.models import DistressSignal, Property, PropertyScore
+
+_PREFIX   = "scoring"
+LOG_EVERY = 10_000
+_BULK     = 5_000
 
 
 def _tax_score(signal) -> int:
@@ -65,7 +71,7 @@ def _compute(prop) -> dict:
 
     raw = tax + foreclosure + absentee + bonus - penalty
     final = max(0, min(100, raw))
-    tier = "hot" if final >= 80 else ("warm" if final >= 50 else "cold")
+    tier = "hot" if final >= 65 else ("warm" if final >= 35 else "cold")
 
     return {
         "score": final,
@@ -76,27 +82,42 @@ def _compute(prop) -> dict:
 
 
 def recompute() -> None:
+    start   = time.time()
     session = get_session()
     props = session.scalars(
         select(Property).options(selectinload(Property.signals))
     ).all()
+    total = len(props)
+    log(_PREFIX, f"recomputing scores for {total:,} properties...")
 
-    count = 0
-    for prop in props:
+    rows: list[dict] = []
+    for i, prop in enumerate(props, 1):
         result = _compute(prop)
-        stmt = insert(PropertyScore).values(
-            property_id=prop.id,
-            **result,
-        ).on_conflict_do_update(
+        rows.append({"property_id": prop.id, **result})
+
+        if i % LOG_EVERY == 0:
+            pct  = int(100 * i / total) if total else 0
+            rate = int(i / (time.time() - start))
+            log(_PREFIX, f"  {i:,}/{total:,} ({pct}%)  {rate:,}/s")
+
+    log(_PREFIX, f"  computed {total:,} scores — writing to DB...")
+    for off in range(0, len(rows), _BULK):
+        batch = rows[off:off+_BULK]
+        stmt  = insert(PropertyScore).values(batch)
+        stmt  = stmt.on_conflict_do_update(
             index_elements=["property_id"],
-            set_=result,
+            set_={
+                "score":       stmt.excluded.score,
+                "tier":        stmt.excluded.tier,
+                "reasons":     stmt.excluded.reasons,
+                "computed_at": stmt.excluded.computed_at,
+            },
         )
         session.execute(stmt)
-        count += 1
 
     session.commit()
     session.close()
-    print(f"Recomputed scores for {count} properties")
+    log(_PREFIX, f"recomputed scores for {total:,} properties  ({elapsed(start)})")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ Run:
 import argparse
 import csv
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,15 +20,23 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from workers.common.db import get_session
+from workers.common.log import elapsed, log
 from workers.common.models import DistressSignal, Property
 
+_PREFIX         = "ingest_foreclosure"
+COMMIT_EVERY    = 200
 _STAGE_SEVERITY = {"filing": 30, "active": 35, "auction": 40}
 
 
 def ingest(csv_path: str) -> None:
+    start   = time.time()
     session = get_session()
     loaded, skipped = 0, 0
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        total_rows = sum(1 for _ in f) - 1
+    log(_PREFIX, f"loading {total_rows:,} rows from {csv_path}")
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -67,9 +76,12 @@ def ingest(csv_path: str) -> None:
             session.execute(stmt)
             loaded += 1
 
+            if loaded % COMMIT_EVERY == 0:
+                session.commit()
+
     session.commit()
     session.close()
-    print(f"Ingested {loaded} foreclosure records, skipped {skipped}")
+    log(_PREFIX, f"ingested {loaded:,} foreclosure records, skipped {skipped:,}  ({elapsed(start)})")
 
 
 if __name__ == "__main__":

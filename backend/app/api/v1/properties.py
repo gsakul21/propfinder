@@ -69,7 +69,7 @@ def list_props(
     distress_types: list[str] | None = Query(None),
     bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     parsed_bbox = None

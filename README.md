@@ -2,25 +2,18 @@
 
 Distressed real estate investment opportunity platform for Montgomery County, PA.
 
-Ingests public county data, computes explainable distress scores, and presents ranked deals via a map-driven web application.
+Ingests public county data, computes explainable distress scores, and surfaces ranked leads via a map-driven web application.
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
+### Prerequisites
 
 - Docker + Docker Compose
-- No API keys required — the map uses free CARTO/OpenStreetMap tiles
+- No API keys required — the map uses free CARTO tiles (OpenStreetMap)
 
-### 2. Configure environment (optional)
-
-```bash
-cp .env.example .env
-# Only needed if you want to change the default API key
-```
-
-### 3. Start the stack
+### 1. Start the stack
 
 ```bash
 docker compose up --build
@@ -29,19 +22,37 @@ docker compose up --build
 This starts:
 - PostgreSQL 16 + PostGIS at `localhost:5432`
 - FastAPI backend at `http://localhost:8000`
-- Next.js frontend at `http://localhost:3000`
+- Next.js frontend at `http://localhost:3000` (hot-reload enabled)
 
 Migrations run automatically on startup.
 
-### 4. Seed sample data
-
-The seed profile loads ~40 realistic Montgomery County properties with distress signals and scores.
+### 2. Run the data pipeline
 
 ```bash
-docker compose --profile seed run --rm seed
+# Full county (~276k parcels, ~10 min)
+docker compose --profile pipeline run --rm pipeline python workers/pipeline.py
+
+# Capped run for development (faster)
+docker compose --profile pipeline run --rm pipeline python workers/pipeline.py --parcel-limit 25000
+
+# Re-ingest without re-fetching (reuses data/ CSVs)
+docker compose --profile pipeline run --rm pipeline python workers/pipeline.py --skip-fetch
+
+# Check source connectivity only
+docker compose --profile pipeline run --rm pipeline python workers/pipeline.py --dry-run
 ```
 
-### 5. Open the app
+Pipeline steps (in order):
+1. Fetch parcels from PASDA ArcGIS → `data/parcels.csv`
+2. Ingest parcels into DB
+3. Fetch tax delinquency upset-sale PDFs → `data/tax_delinquency.csv`
+4. Ingest tax delinquency records
+5. Fetch sheriff sale listings → `data/foreclosures.csv`
+6. Ingest foreclosure records
+7. Detect absentee owners (address comparison)
+8. Recompute distress scores
+
+### 3. Open the app
 
 Navigate to `http://localhost:3000`
 
@@ -53,92 +64,71 @@ Navigate to `http://localhost:3000`
 Public Data Sources → Ingestion Workers → PostgreSQL + PostGIS → FastAPI → Next.js
 ```
 
-| Service    | Technology           | Port  |
-|------------|----------------------|-------|
-| Database   | PostgreSQL 16 + PostGIS | 5432 |
-| Backend    | FastAPI + SQLAlchemy | 8000  |
-| Frontend   | Next.js 15           | 3000  |
+| Service  | Technology              | Port |
+|----------|-------------------------|------|
+| Database | PostgreSQL 16 + PostGIS | 5432 |
+| Backend  | FastAPI + SQLAlchemy    | 8000 |
+| Frontend | Next.js 15              | 3000 |
 
 ---
 
-## API Reference
+## Data Sources
 
-### GET /api/v1/properties
+All sources are Montgomery County, PA public records — no accounts or scraping tokens required.
 
-Query parameters:
-
-| Param           | Type     | Description                                |
-|-----------------|----------|--------------------------------------------|
-| `min_score`     | integer  | Filter by minimum score                    |
-| `county`        | string   | Filter by county name                      |
-| `property_type` | string   | `residential`, `commercial`, etc.          |
-| `distress_types`| string[] | `tax_delinquency`, `foreclosure`, `absentee` |
-| `bbox`          | string   | `min_lon,min_lat,max_lon,max_lat`           |
-| `page`          | integer  | Page number (default: 1)                   |
-| `limit`         | integer  | Results per page (default: 50, max: 200)   |
-
-### GET /api/v1/properties/{id}
-
-Returns full property detail with score breakdown and distress signal details.
-
-### POST /api/v1/exports
-
-Exports filtered lead list as CSV. Accepts same query parameters as the list endpoint.
+| Signal           | Source                                                                                     |
+|------------------|--------------------------------------------------------------------------------------------|
+| Parcels          | PASDA ArcGIS REST API (`mapservices.pasda.psu.edu`) — ~276k residential parcels            |
+| Tax Delinquency  | [Tax Claim Bureau upset-sale PDFs](https://www.montgomerycountypa.gov/2635/Prior-Sales-Results) |
+| Foreclosures     | [CivilView sheriff sale listings](https://salesweb.civilview.com/Sales/SalesSearch?countyId=23) |
 
 ---
 
 ## Scoring
 
-Scores are deterministic and explainable:
+Scores are deterministic and explainable. Every property's score decomposes into named components.
 
-| Signal                    | Points  |
-|---------------------------|---------|
-| Tax delinquency < 1 yr    | +15     |
-| Tax delinquency 1–2 yrs   | +25     |
-| Tax delinquency > 2 yrs   | +35     |
-| Foreclosure (filing)      | +30     |
-| Foreclosure (active)      | +35     |
-| Foreclosure (auction)     | +40     |
-| Absentee (same county)    | +10     |
-| Absentee (diff county)    | +15     |
-| Absentee (out of state)   | +20     |
-| 2-signal stacking bonus   | +10     |
-| 3-signal stacking bonus   | +15     |
-| Recent transfer (< 90d)   | −20     |
-| Foreclosure resolved      | −30     |
+| Signal                    | Points |
+|---------------------------|--------|
+| Tax delinquency < 1 yr    | +15    |
+| Tax delinquency 1–2 yrs   | +25    |
+| Tax delinquency > 2 yrs   | +35    |
+| Foreclosure (filing)      | +30    |
+| Foreclosure (active)      | +35    |
+| Foreclosure (auction)     | +40    |
+| Absentee (same county)    | +10    |
+| Absentee (different county) | +15  |
+| Absentee (out of state)   | +20    |
+| 2-signal stacking bonus   | +10    |
+| 3-signal stacking bonus   | +15    |
+| Recent transfer (< 90d)   | −20    |
+| Foreclosure resolved      | −30    |
 
-**Tiers:** Hot (80–100) · Warm (50–79) · Cold (< 50)
+**Tiers:** Hot (≥ 65) · Warm (35–64) · Cold (< 35)
 
 ---
 
-## Workers
+## API Reference
 
-Run workers to ingest real county data:
+### `GET /api/v1/properties`
 
-```bash
-# Ingest parcels from CSV
-DATABASE_URL=... python -m workers.ingest.parcels --file parcels.csv
+| Param            | Type     | Description                                          |
+|------------------|----------|------------------------------------------------------|
+| `min_score`      | integer  | Minimum distress score                               |
+| `county`         | string   | Filter by county name                                |
+| `property_type`  | string   | `residential`, `commercial`, etc.                    |
+| `distress_types` | string[] | `tax_delinquency`, `foreclosure`, `absentee`         |
+| `bbox`           | string   | `min_lon,min_lat,max_lon,max_lat`                    |
+| `page`           | integer  | Page number (default: 1)                             |
+| `limit`          | integer  | Results per page (default: 50, max: 1000)            |
 
-# Ingest tax delinquency records
-DATABASE_URL=... python -m workers.ingest.tax_delinquency --file delinquent.csv
+### `GET /api/v1/properties/{id}`
 
-# Ingest foreclosure filings
-DATABASE_URL=... python -m workers.ingest.foreclosure --file foreclosures.csv
+Returns full property detail with score breakdown and all distress signal records.
 
-# Recompute absentee ownership flags
-DATABASE_URL=... python -m workers.ingest.absentee
+### `POST /api/v1/exports`
 
-# Recompute all property scores
-DATABASE_URL=... python -m workers.scoring.recompute
-```
-
-### Expected CSV Formats
-
-**parcels.csv:** `parcel_id, address, city, state, zip_code, property_type, assessed_value, owner_name, owner_mailing_address, latitude, longitude`
-
-**delinquent.csv:** `parcel_id, tax_year, amount_due, delinquency_status, sale_eligible`
-
-**foreclosures.csv:** `parcel_id, filing_date, case_number, stage, auction_date`
+Exports a filtered lead list as CSV. Accepts the same query parameters as the list endpoint.
 
 ---
 
@@ -149,8 +139,9 @@ DATABASE_URL=... python -m workers.scoring.recompute
 ```bash
 cd backend
 pip install -r requirements.txt
-DATABASE_URL=postgresql+psycopg2://propfinder:propfinder@localhost:5432/propfinder alembic upgrade head
-uvicorn app.main:app --reload
+DATABASE_URL=postgresql+psycopg2://propfinder:propfinder@localhost:5432/propfinder \
+  alembic upgrade head
+DATABASE_URL=... uvicorn app.main:app --reload
 ```
 
 ### Frontend (without Docker)
@@ -161,12 +152,21 @@ npm install
 NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 ```
 
----
+### Running individual pipeline workers
 
-## Data Sources
+```bash
+# Set DATABASE_URL for all worker commands
+export DATABASE_URL=postgresql+psycopg2://propfinder:propfinder@localhost:5432/propfinder
 
-Montgomery County, PA public records:
+python -m workers.fetch.parcels --out data/parcels.csv
+python -m workers.ingest.parcels --file data/parcels.csv
 
-- **Parcels:** [Montgomery County Board of Assessment](https://www.montcopa.org/193/Assessment)
-- **Tax Delinquency:** County Treasurer delinquent tax rolls
-- **Foreclosures:** [Montgomery County Court Dockets](https://ujsportal.pacourts.us/)
+python -m workers.fetch.tax_delinquency --out data/tax_delinquency.csv
+python -m workers.ingest.tax_delinquency --file data/tax_delinquency.csv
+
+python -m workers.fetch.foreclosures --out data/foreclosures.csv
+python -m workers.ingest.foreclosure --file data/foreclosures.csv
+
+python -m workers.ingest.absentee       # recomputes absentee flags
+python -m workers.scoring.recompute     # recomputes all scores
+```

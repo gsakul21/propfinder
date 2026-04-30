@@ -63,14 +63,35 @@ services:
     profiles:
       - seed
 
+  pipeline:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: python workers/pipeline.py
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-propfinder}:${POSTGRES_PASSWORD:-propfinder}@db:5432/${POSTGRES_DB:-propfinder}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./workers:/app/workers
+      - ./data:/app/data
+    profiles:
+      - pipeline
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      target: dev
     ports:
       - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
     depends_on:
       - backend
 

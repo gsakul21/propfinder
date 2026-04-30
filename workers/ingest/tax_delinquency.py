@@ -10,6 +10,7 @@ Run:
 import argparse
 import csv
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,7 +20,12 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from workers.common.db import get_session
+from workers.common.log import elapsed, log
 from workers.common.models import DistressSignal, Property
+
+_PREFIX      = "ingest_tax"
+COMMIT_EVERY = 500
+LOG_EVERY    = 500
 
 
 def _years_delinquent(tax_year: int) -> float:
@@ -27,9 +33,14 @@ def _years_delinquent(tax_year: int) -> float:
 
 
 def ingest(csv_path: str) -> None:
+    start   = time.time()
     session = get_session()
     loaded, skipped = 0, 0
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        total_rows = sum(1 for _ in f) - 1
+    log(_PREFIX, f"loading {total_rows:,} rows from {csv_path}")
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -71,9 +82,17 @@ def ingest(csv_path: str) -> None:
             session.execute(stmt)
             loaded += 1
 
+            if loaded % COMMIT_EVERY == 0:
+                session.commit()
+
+            if loaded % LOG_EVERY == 0:
+                pct  = int(100 * (loaded + skipped) / total_rows) if total_rows else 0
+                rate = int(loaded / (time.time() - start))
+                log(_PREFIX, f"  {loaded:,} loaded, {skipped:,} skipped ({pct}%)  {rate:,}/s")
+
     session.commit()
     session.close()
-    print(f"Ingested {loaded} tax delinquency records, skipped {skipped}")
+    log(_PREFIX, f"ingested {loaded:,} tax delinquency records, skipped {skipped:,}  ({elapsed(start)})")
 
 
 if __name__ == "__main__":

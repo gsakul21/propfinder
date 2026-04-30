@@ -25,8 +25,8 @@ export function PropertyMap() {
   const { filters, selectedPropertyId, setSelectedPropertyId } = useAppStore();
 
   const { data } = useQuery({
-    queryKey: ["properties", filters],
-    queryFn: () => fetchProperties(filters as Partial<Filters>),
+    queryKey: ["properties-map", filters],
+    queryFn: () => fetchProperties({ ...(filters as Partial<Filters>), limit: 1000 }),
   });
 
   const properties = data?.results ?? [];
